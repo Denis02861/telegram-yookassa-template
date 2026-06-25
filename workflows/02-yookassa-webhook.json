@@ -1,0 +1,184 @@
+{
+  "name": "TG YooKassa Bot - Webhook Handler",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "yookassa-webhook",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "n_webhook",
+      "name": "Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        200,
+        300
+      ],
+      "webhookId": "REPLACE_WITH_YOUR_WEBHOOK_ID"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Парсим webhook от YooKassa\nconst body = $input.first().json.body || $input.first().json;\nconst event = body.event;\nconst payment = body.object || {};\nconst meta = payment.metadata || {};\n\nreturn [{\n  json: {\n    event,\n    payment_id: payment.id,\n    status: payment.status,\n    amount: payment.amount?.value,\n    chat_id: meta.chat_id,\n    tier_key: meta.tier_key,\n    is_succeeded: event === 'payment.succeeded',\n    raw_payment: payment\n  }\n}];"
+      },
+      "id": "n_parse",
+      "name": "Parse Event",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        420,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "1",
+              "leftValue": "={{ $json.is_succeeded }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "equal"
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      },
+      "id": "n_if_succeeded",
+      "name": "Is Succeeded?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        640,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Готовим сообщение успеха пользователю\nconst p = $input.first().json;\n\nconst TARIFFS_LABELS = {\n  basic: 'Базовый',\n  pro: 'Профи'\n};\n\nconst tierLabel = TARIFFS_LABELS[p.tier_key] || p.tier_key;\n\nreturn [{\n  json: {\n    chat_id: p.chat_id,\n    text: `✅ <b>Оплата прошла</b>\\n\\nТариф: <b>${tierLabel}</b>\\nСумма: ${p.amount} ₽\\n\\nДоступ активирован. Спасибо!`,\n    parse_mode: 'HTML'\n  }\n}];"
+      },
+      "id": "n_build_success",
+      "name": "Build Success Msg",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        860,
+        200
+      ]
+    },
+    {
+      "parameters": {
+        "chatId": "={{ $json.chat_id }}",
+        "text": "={{ $json.text }}",
+        "additionalFields": {
+          "parse_mode": "={{ $json.parse_mode }}"
+        }
+      },
+      "id": "n_send_user",
+      "name": "Send to User",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        1080,
+        200
+      ],
+      "credentials": {
+        "telegramApi": {
+          "id": "REPLACE",
+          "name": "Your Telegram Bot"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "respondWith": "text",
+        "responseBody": "OK"
+      },
+      "id": "n_respond",
+      "name": "Respond OK",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [
+        1300,
+        300
+      ]
+    }
+  ],
+  "connections": {
+    "Webhook": {
+      "main": [
+        [
+          {
+            "node": "Parse Event",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Event": {
+      "main": [
+        [
+          {
+            "node": "Is Succeeded?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Is Succeeded?": {
+      "main": [
+        [
+          {
+            "node": "Build Success Msg",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Respond OK",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Success Msg": {
+      "main": [
+        [
+          {
+            "node": "Send to User",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send to User": {
+      "main": [
+        [
+          {
+            "node": "Respond OK",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "staticData": null
+}

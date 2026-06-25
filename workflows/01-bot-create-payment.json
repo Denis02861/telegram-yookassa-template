@@ -1,0 +1,321 @@
+{
+  "name": "TG YooKassa Bot - Create Payment",
+  "nodes": [
+    {
+      "parameters": {
+        "updates": [
+          "message",
+          "callback_query"
+        ],
+        "additionalFields": {}
+      },
+      "id": "n_trigger",
+      "name": "Telegram Trigger",
+      "type": "n8n-nodes-base.telegramTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        200,
+        300
+      ],
+      "webhookId": "REPLACE_WITH_YOUR_WEBHOOK_ID",
+      "credentials": {
+        "telegramApi": {
+          "id": "REPLACE",
+          "name": "Your Telegram Bot"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Парсим вход\nconst msg = $input.first().json;\nconst text = msg.message?.text || '';\nconst callbackData = msg.callback_query?.data || '';\nconst chatId = msg.message?.chat?.id || msg.callback_query?.message?.chat?.id;\nconst userId = msg.message?.from?.id || msg.callback_query?.from?.id;\nconst callbackQueryId = msg.callback_query?.id || null;\n\n// Тарифы (поменяйте под себя)\nconst TARIFFS = {\n  basic: { title: 'Базовый', desc: 'Доступ на месяц', amount: 199 },\n  pro:   { title: 'Профи',   desc: 'Доступ на год',   amount: 1499 }\n};\n\nlet action = 'unknown';\nlet tierKey = null;\n\nif (text === '/pay' || text === '/start') {\n  action = 'show_tariffs';\n} else if (callbackData.startsWith('pay:')) {\n  action = 'create_payment';\n  tierKey = callbackData.split(':')[1];\n}\n\nreturn [{ json: { action, tierKey, chatId, userId, callbackQueryId, tariffs: TARIFFS } }];"
+      },
+      "id": "n_router",
+      "name": "Router",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        420,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict"
+                },
+                "conditions": [
+                  {
+                    "id": "1",
+                    "leftValue": "={{ $json.action }}",
+                    "rightValue": "show_tariffs",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "show_tariffs"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict"
+                },
+                "conditions": [
+                  {
+                    "id": "2",
+                    "leftValue": "={{ $json.action }}",
+                    "rightValue": "create_payment",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "create_payment"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "n_switch",
+      "name": "Switch by Action",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.2,
+      "position": [
+        640,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Формируем меню тарифов\nconst r = $input.first().json;\nconst text = '💎 <b>Выберите тариф</b>\\n\\n' +\n  Object.entries(r.tariffs).map(([k,t]) => `<b>${t.title}</b> — ${t.amount} ₽\\n${t.desc}`).join('\\n\\n');\n\nconst buttons = Object.entries(r.tariffs).map(([k,t]) => [{ text: `💳 ${t.title} ${t.amount} ₽`, callback_data: `pay:${k}` }]);\n\nreturn [{\n  json: {\n    chat_id: r.chatId,\n    text,\n    parse_mode: 'HTML',\n    reply_markup: { inline_keyboard: buttons }\n  }\n}];"
+      },
+      "id": "n_build_tariffs",
+      "name": "Build Tariffs Menu",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        860,
+        200
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Формируем тело запроса к YooKassa\nconst r = $input.first().json;\nconst tier = r.tariffs[r.tierKey];\nif (!tier) throw new Error('Unknown tier: ' + r.tierKey);\n\n// Idempotence key чтобы повторные клики не плодили платежи\nconst bucket = Math.floor(Date.now() / (5*60*1000)); // 5-минутное окно\nconst idempotenceKey = `tg-${r.chatId}-${r.tierKey}-${tier.amount}-${bucket}`;\n\nconst ykBody = {\n  amount: { value: tier.amount.toFixed(2), currency: 'RUB' },\n  capture: true,\n  confirmation: {\n    type: 'redirect',\n    return_url: 'https://t.me/YOUR_BOT_USERNAME' // ВАЖНО: замените на свой бот\n  },\n  description: `${tier.title} (${r.chatId})`,\n  metadata: {\n    chat_id: String(r.chatId),\n    tier_key: r.tierKey,\n    user_id: String(r.userId)\n  },\n  receipt: {\n    customer: { email: `${r.chatId}@yourbot.example` }, // FZ-54: поменяйте на реальный сбор email\n    items: [{\n      description: tier.title,\n      quantity: '1.00',\n      amount: { value: tier.amount.toFixed(2), currency: 'RUB' },\n      vat_code: 1,\n      payment_mode: 'full_payment',\n      payment_subject: 'service'\n    }]\n  }\n};\n\nreturn [{ json: { chat_id: r.chatId, callback_query_id: r.callbackQueryId, tier_title: tier.title, idempotence_key: idempotenceKey, yk_body: ykBody } }];"
+      },
+      "id": "n_build_yk",
+      "name": "Build YK Payment",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        860,
+        400
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.yookassa.ru/v3/payments",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpBasicAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Idempotence-Key",
+              "value": "={{ $json.idempotence_key }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.yk_body) }}",
+        "options": {}
+      },
+      "id": "n_yk_create",
+      "name": "Create YK Payment",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1080,
+        400
+      ],
+      "credentials": {
+        "httpBasicAuth": {
+          "id": "REPLACE",
+          "name": "YooKassa (shopId + secretKey)"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Готовим ответ пользователю со ссылкой на оплату\nconst r = $('Build YK Payment').first().json;\nconst yk = $input.first().json;\n\nreturn [{\n  json: {\n    chat_id: r.chat_id,\n    text: `💳 <b>Оплата тарифа «${r.tier_title}»</b>\\n\\nНажмите кнопку ниже чтобы открыть страницу оплаты YooKassa. После успешной оплаты вы автоматически получите уведомление.`,\n    parse_mode: 'HTML',\n    reply_markup: {\n      inline_keyboard: [[\n        { text: '💳 Оплатить', url: yk.confirmation.confirmation_url }\n      ]]\n    }\n  }\n}];"
+      },
+      "id": "n_build_link",
+      "name": "Build Pay Link",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1300,
+        400
+      ]
+    },
+    {
+      "parameters": {
+        "chatId": "={{ $json.chat_id }}",
+        "text": "={{ $json.text }}",
+        "additionalFields": {
+          "parse_mode": "={{ $json.parse_mode }}",
+          "reply_markup": "={{ JSON.stringify($json.reply_markup) }}"
+        }
+      },
+      "id": "n_send_tariffs",
+      "name": "Send Tariffs",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        1080,
+        200
+      ],
+      "credentials": {
+        "telegramApi": {
+          "id": "REPLACE",
+          "name": "Your Telegram Bot"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "chatId": "={{ $json.chat_id }}",
+        "text": "={{ $json.text }}",
+        "additionalFields": {
+          "parse_mode": "={{ $json.parse_mode }}",
+          "reply_markup": "={{ JSON.stringify($json.reply_markup) }}"
+        }
+      },
+      "id": "n_send_link",
+      "name": "Send Pay Link",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        1520,
+        400
+      ],
+      "credentials": {
+        "telegramApi": {
+          "id": "REPLACE",
+          "name": "Your Telegram Bot"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Telegram Trigger": {
+      "main": [
+        [
+          {
+            "node": "Router",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Router": {
+      "main": [
+        [
+          {
+            "node": "Switch by Action",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Switch by Action": {
+      "main": [
+        [
+          {
+            "node": "Build Tariffs Menu",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Build YK Payment",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Tariffs Menu": {
+      "main": [
+        [
+          {
+            "node": "Send Tariffs",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build YK Payment": {
+      "main": [
+        [
+          {
+            "node": "Create YK Payment",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Create YK Payment": {
+      "main": [
+        [
+          {
+            "node": "Build Pay Link",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Pay Link": {
+      "main": [
+        [
+          {
+            "node": "Send Pay Link",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "staticData": null
+}
